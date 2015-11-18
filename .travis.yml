@@ -1,0 +1,2 @@
+language: go
+install: go get github.com/FastVPSEestiOu/check_openvz_mirror_with_clair
