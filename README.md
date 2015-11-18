@@ -5,6 +5,7 @@ check_openvz_mirror_with_clair
 
 Install
 -------
+[![Build Status](https://travis-ci.org/FastVPSEestiOu/check_openvz_mirror_with_clair.svg?branch=master)](https://travis-ci.org/FastVPSEestiOu/check_openvz_mirror_with_clair)
 
 You must have already install and worked [clair](https://github.com/coreos/clair)
 
