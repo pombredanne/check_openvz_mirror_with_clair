@@ -63,8 +63,11 @@ func init() {
 	openvzMirror = *openvzMirrorFlag
 	clair.Address = *clairAddressFlag
 	clair.Port = *clairPortFlag
-	// TODO - check priority
-	clair.MinimumPriority = *clairMinPriorityFlag
+	var err error
+	clair.MinimumPriority, err = CheckPriority(*clairMinPriorityFlag)
+	if err != nil {
+		log.Fatal("Incorrect priority or priority check failed with error - ", err)
+	}
 }
 
 func main() {
@@ -207,4 +210,18 @@ func (clair ClairAPI) GetLayerVuln(templateName string) (vulnList []Vulnerabilit
 	}
 	vulnList = result.Vulnerabilities
 	return vulnList, nil
+}
+
+func CheckPriority(priority string) (result string, err error) {
+	// Acutal list see in type Priority in
+	// https://github.com/coreos/clair/blob/master/utils/types/priority.go
+	match, err := regexp.MatchString(`(?i)^(Unknown|Negligible|Low|Medium|High|Critical|Critical|Defcon1)$`, priority)
+	if err != nil {
+		return "", err
+	}
+	if match {
+		result = strings.ToUpper(string(priority[0])) + strings.ToLower(priority[1:len(priority)])
+		return
+	}
+	return "", errors.New("Unknown priority " + priority)
 }
