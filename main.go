@@ -1,8 +1,5 @@
 package main
 
-// TODO
-//    * Add https support for clair API requests
-
 import (
 	"bytes"
 	"encoding/json"
@@ -16,11 +13,17 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	// for cert auth
+	"crypto/tls"
+	"crypto/x509"
 )
 
 var (
-	clair        ClairAPI
-	openvzMirror string
+	clair                     ClairAPI
+	openvzMirror              string
+	tlsClient                 *http.Client
+	httpClient                = &http.Client{}
+	certFile, keyFile, caFile string
 )
 
 type ClairAPI struct {
@@ -46,6 +49,10 @@ type VulnerabilityItem struct {
 type GetLayersVulnResponseAPI struct {
 	Vulnerabilities []VulnerabilityItem `json:"Vulnerabilities"`
 }
+type GetVersionsAnswer struct {
+	ApiVersion    string `json:"APIVersion"`
+	EngineVersion string `json:"EngineVersion"`
+}
 
 func init() {
 	// Add logging
@@ -53,10 +60,15 @@ func init() {
 	log.SetPrefix("main: ")
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
+	// Flags
 	openvzMirrorFlag := flag.String("m", "https://download.openvz.org/template/precreated/", "Adress to link(directory - not supported yet) with precreated templates")
 	clairAddressFlag := flag.String("a", "127.0.0.1", "Adress to clair API")
 	clairPortFlag := flag.Int("p", 6060, "Adress to clair API")
 	clairMinPriorityFlag := flag.String("P", "High", "The minimum priority of the returned vulnerabilities")
+
+	certFileFlag := flag.String("cert", "", "A PEM encoded certificate file.")
+	keyFileFlag := flag.String("key", "", "A PEM encoded private key file.")
+	caFileFlag := flag.String("CA", "", "A PEM eoncoded CA's certificate file.")
 
 	flag.Parse()
 	openvzMirror = *openvzMirrorFlag
@@ -67,15 +79,36 @@ func init() {
 	if err != nil {
 		log.Fatal("Incorrect priority or priority check failed with error - ", err)
 	}
+
+	// We have cert auth keys
+	if len(*certFileFlag+*keyFileFlag+*caFileFlag) > 0 {
+		certFile, keyFile, caFile = *certFileFlag, *keyFileFlag, *caFileFlag
+		if len(*certFileFlag) > 0 && len(*keyFileFlag) > 0 && len(*caFileFlag) > 0 {
+			// Generate tls client
+			clair.HttpsEnable = true
+			tlsClient, err = CreateTlsClient(*certFileFlag, *keyFileFlag, *caFileFlag)
+			if err != nil {
+				log.Fatal("Cannot create tls client, please check previous errors")
+			}
+		} else {
+			fmt.Println("Please set cert,key and ca flags if you need client certificate auth for clair API")
+			os.Exit(1)
+		}
+	}
 }
 
 func main() {
 	fmt.Println("We use:")
 	fmt.Println("Clair - ", clair.Address+":"+strconv.Itoa(clair.Port))
+	versions, err := clair.GetVersions()
+	if err != nil {
+		log.Fatal("We cannot connet to clair ", err)
+	}
+	fmt.Println("We have clair with APIVersion:", versions.ApiVersion, "and EngineVersion:", versions.EngineVersion)
 	fmt.Println("OpenVZ mirror - ", openvzMirror)
 	isRemoteMirror, _ := regexp.MatchString(`(?i)^http(s)?\://`, openvzMirror)
 	var templateList []string
-	var err error
+	//var err error
 	if isRemoteMirror {
 		templateList, err = GetRemoteListing(openvzMirror)
 	} else {
@@ -104,7 +137,15 @@ func main() {
 		} else {
 			fmt.Println(template, "added success")
 			fmt.Println("You can check it via:")
-			fmt.Println("curl -s http://" + clair.Address + ":" + strconv.Itoa(clair.Port) + "/v1/layers/" + template + "/vulnerabilities?minimumPriority=" + clair.MinimumPriority + " | python -m json.tool")
+			getResultCurl := clair.Address + ":" + strconv.Itoa(clair.Port) + "/v1/layers/" + template + "/vulnerabilities?minimumPriority=" + clair.MinimumPriority
+			if clair.HttpsEnable {
+				getResultCurl = "curl -s https://" + getResultCurl + " --cert " + certFile + " --key " + keyFile + " --cacert " + caFile
+			} else {
+				getResultCurl = "curl -s http://" + getResultCurl
+			}
+			getResultCurl = getResultCurl + " | python -m json.tool"
+			//fmt.Println("curl -s http://" + clair.Address + ":" + strconv.Itoa(clair.Port) + "/v1/layers/" + template + "/vulnerabilities?minimumPriority=" + clair.MinimumPriority + " | python -m json.tool")
+			fmt.Println(getResultCurl)
 			vulnList, err := clair.GetLayerVuln(template)
 			if err != nil {
 				fmt.Println("Cannot get vulnerabilities for this template - see errors and check it manual, please")
@@ -158,11 +199,14 @@ func CleanZeroValuesFromArray(array []string) []string {
 
 // https://github.com/coreos/clair/blob/master/docs/API.md#insert-a-new-layer
 func (clair ClairAPI) AddLayer(openvzMirror string, templateName string) error {
+	var client *http.Client
 	url := clair.Address + ":" + strconv.Itoa(clair.Port) + "/v1/layers"
 	if clair.HttpsEnable {
-		// TODO
+		url = "https://" + url
+		client = tlsClient
 	} else {
 		url = "http://" + url
+		client = httpClient
 	}
 
 	jsonRequest, err := json.Marshal(AddLayoutRequestAPI{ID: templateName, Path: openvzMirror + "/" + templateName + ".tar.gz"})
@@ -178,7 +222,7 @@ func (clair ClairAPI) AddLayer(openvzMirror string, templateName string) error {
 	}
 	request.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	//client := &http.Client{}
 	response, err := client.Do(request)
 	if err != nil {
 		log.Println("Send request failed request: ", err)
@@ -198,14 +242,17 @@ func (clair ClairAPI) AddLayer(openvzMirror string, templateName string) error {
 
 // https://github.com/coreos/clair/blob/master/docs/API.md#get-a-layers-vulnerabilities
 func (clair ClairAPI) GetLayerVuln(templateName string) (vulnList []VulnerabilityItem, err error) {
+	var client *http.Client
 	url := clair.Address + ":" + strconv.Itoa(clair.Port) + "/v1/layers/" + templateName + "/vulnerabilities" + "?minimumPriority=" + clair.MinimumPriority
 	if clair.HttpsEnable {
-		// TODO
+		url = "https://" + url
+		client = tlsClient
 	} else {
 		url = "http://" + url
+		client = httpClient
 	}
 
-	response, err := http.Get(url)
+	response, err := client.Get(url)
 	if err != nil {
 		log.Println("Send request failed request: ", err)
 		return vulnList, err
@@ -229,6 +276,40 @@ func (clair ClairAPI) GetLayerVuln(templateName string) (vulnList []Vulnerabilit
 	return vulnList, nil
 }
 
+func (clair ClairAPI) GetVersions() (versions GetVersionsAnswer, err error) {
+	var client *http.Client
+	url := clair.Address + ":" + strconv.Itoa(clair.Port) + "/v1/versions"
+	if clair.HttpsEnable {
+		url = "https://" + url
+		client = tlsClient
+	} else {
+		url = "http://" + url
+		client = httpClient
+	}
+
+	response, err := client.Get(url)
+	if err != nil {
+		log.Println("Send request failed request: ", err)
+		return
+	}
+
+	defer response.Body.Close()
+	body, _ := ioutil.ReadAll(response.Body)
+
+	// if OK  - returned "200 OK"
+	if response.StatusCode != 200 {
+		log.Println("Error - response not ok - ", response.Status, " with message: ", string(body))
+		return versions, errors.New(string(body))
+	}
+
+	err = json.Unmarshal(body, &versions)
+	if err != nil {
+		log.Println("Cannot parse answer from clair to json: ", err)
+		return
+	}
+	return
+}
+
 func CheckPriority(priority string) (result string, err error) {
 	// Acutal list see in type Priority in
 	// https://github.com/coreos/clair/blob/master/utils/types/priority.go
@@ -241,4 +322,33 @@ func CheckPriority(priority string) (result string, err error) {
 		return
 	}
 	return "", errors.New("Unknown priority " + priority)
+}
+
+func CreateTlsClient(certFile, keyFile, caFile string) (client *http.Client, err error) {
+	// Load client cert
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		log.Println("Cannot load client cert", err)
+		return
+	}
+
+	// Load CA cert
+	caCert, err := ioutil.ReadFile(caFile)
+	if err != nil {
+		log.Println("Cannot get caFile:", err)
+		return
+	}
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	// Setup HTTPS client
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caCertPool,
+	}
+	tlsConfig.BuildNameToCertificate()
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	client = &http.Client{Transport: transport}
+
+	return
 }
