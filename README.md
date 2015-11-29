@@ -22,7 +22,7 @@ Usage
 check_openvz_mirror_with_clair -m MIRROR [ -i ADRESS -p PORT -P PRIORITY --help ]
 ```
 
-- -m  - link for openvz mirror like https://download.openvz.org/template/precreated/
+- -m  - link for openvz mirror like https://download.openvz.org/template/precreated/ or path to local mirror with listing file like /home/user/openvzmirror
 - -a  - adress to clair API
 - -p  - port to clair API
 - -P  - The minimum priority of the returned vulnerabilities (default "High")
@@ -90,4 +90,3 @@ Detect 3 vulnerabilities for this template
 TODO
 -----
 - Add support https and certificate auth for clair API
-- Add support local directory with mirror

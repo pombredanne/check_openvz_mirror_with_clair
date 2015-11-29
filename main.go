@@ -2,7 +2,6 @@ package main
 
 // TODO
 //    * Add https support for clair API requests
-//    * Add local directory support
 
 import (
 	"bytes"
@@ -74,11 +73,18 @@ func main() {
 	fmt.Println("We use:")
 	fmt.Println("Clair - ", clair.Address+":"+strconv.Itoa(clair.Port))
 	fmt.Println("OpenVZ mirror - ", openvzMirror)
-
-	templateList, err := GetRemoteListing(openvzMirror)
+	isRemoteMirror, _ := regexp.MatchString(`(?i)^http(s)?\://`, openvzMirror)
+	var templateList []string
+	var err error
+	if isRemoteMirror {
+		templateList, err = GetRemoteListing(openvzMirror)
+	} else {
+		templateList, err = GetLocalListing(openvzMirror)
+	}
 	if err != nil {
 		log.Fatal("Cannot get template listing - exit")
 	}
+
 	templateList = CleanZeroValuesFromArray(templateList)
 	fmt.Println("We have", len(templateList), "templates on mirror")
 	fmt.Println()
@@ -126,6 +132,17 @@ func GetRemoteListing(adress string) (templateList []string, err error) {
 	}
 
 	templateList = strings.Split(string(listingAnswerByte), "\n")
+	return
+}
+
+func GetLocalListing(directory string) (templateList []string, err error) {
+	result, err := ioutil.ReadFile(directory + "/.listing")
+	if err != nil {
+		log.Println("Cannot get listing via local file from ", directory)
+		log.Println(err)
+		return
+	}
+	templateList = strings.Split(string(result), "\n")
 	return
 }
 
